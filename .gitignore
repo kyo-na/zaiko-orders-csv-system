@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+db.sqlite3
+
+# Node
+node_modules/
+dist/
+
+# CSV実データ（サンプルのみ公開）
+app/data/*.csv
+!app/data/sample_*.csv
+
+# Export
+app/data/exports/
+
+# OS
+.DS_Store
+Thumbs.db

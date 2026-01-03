@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>注文票</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+  {% csrf_token %}
+  <div class="container py-4">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <h1 class="h3 mb-0">注文票</h1>
+      <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="/inventory/">在庫</a>
+        <a class="btn btn-outline-primary" href="/history/">注文履歴</a>
+      </div>
+    </div>
+
+    <div id="msg"></div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">名前</label>
+            <select id="name" class="form-select"></select>
+          </div>
+
+          <div class="col-md-6"></div>
+
+          <div class="col-md-6">
+            <label class="form-label">おかず</label>
+            <select id="okazu" class="form-select"></select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">おかず賞味期限</label>
+            <select id="okazu_expiry" class="form-select"></select>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">ご飯</label>
+            <select id="gohan" class="form-select"></select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">ご飯賞味期限</label>
+            <select id="gohan_expiry" class="form-select"></select>
+          </div>
+        </div>
+
+        <div class="d-flex gap-2 mt-3">
+          <button id="btn-submit" class="btn btn-primary">仮送信（未確定に追加）</button>
+          <button id="btn-confirm" class="btn btn-success">一括確定（在庫-1）</button>
+        </div>
+      </div>
+    </div>
+
+    <h2 class="h5">未確定一覧（取消も表示）</h2>
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle">
+        <thead>
+          <tr>
+            <th>日時</th>
+            <th>名前</th>
+            <th>おかず</th>
+            <th>おかず期限</th>
+            <th>ご飯</th>
+            <th>ご飯期限</th>
+            <th>状態</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="pending-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+/* ===== cookie から csrf token を取る（Babel不要） ===== */
+function getCookie(name) {
+  var value = null;
+  if (document.cookie && document.cookie !== '') {
+    var cookies = document.cookie.split(';');
+    for (var i = 0; i < cookies.length; i++) {
+      var c = cookies[i].trim();
+      if (c.substring(0, name.length + 1) === (name + '=')) {
+        value = decodeURIComponent(c.substring(name.length + 1));
+        break;
+      }
+    }
+  }
+  return value;
+}
+function csrf() { return getCookie('csrftoken'); }
+
+/* ===== 画面要素 ===== */
+var elMsg = document.getElementById('msg');
+var elName = document.getElementById('name');
+var elOkazu = document.getElementById('okazu');
+var elOkazuExpiry = document.getElementById('okazu_expiry');
+var elGohan = document.getElementById('gohan');
+var elGohanExpiry = document.getElementById('gohan_expiry');
+var elPendingBody = document.getElementById('pending-body');
+
+var OPTS = null;
+
+/* ===== メッセージ表示 ===== */
+function showMsg(kind, text) {
+  if (!text) { elMsg.innerHTML = ''; return; }
+  var cls = (kind === 'success') ? 'alert-success' : 'alert-danger';
+  elMsg.innerHTML = '<div class="alert ' + cls + ' mb-3" style="white-space:pre-line">' + escapeHtml(text) + '</div>';
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, function(m){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]);
+  });
+}
+function fmtIso(iso){
+  try { return new Date(iso).toLocaleString(); } catch(e) { return iso; }
+}
+
+/* ===== select を埋める ===== */
+function setSelectOptions(el, arr, selected) {
+  el.innerHTML = '';
+  for (var i=0;i<arr.length;i++){
+    var op = document.createElement('option');
+    op.value = arr[i];
+    op.textContent = arr[i];
+    el.appendChild(op);
+  }
+  if (selected) el.value = selected;
+}
+
+/* ===== item -> expiry の配列 ===== */
+function expiriesOf(item){
+  if (!OPTS || !OPTS.item_to_expiry) return [];
+  return OPTS.item_to_expiry[item] || [];
+}
+function qtyOf(item, expiry){
+  if (!OPTS || !OPTS.qty_map) return null;
+  var key = item + '||' + expiry;
+  if (Object.prototype.hasOwnProperty.call(OPTS.qty_map, key)) return OPTS.qty_map[key];
+  return null;
+}
+
+/* ===== expiry select を描画（在庫も見せる） ===== */
+function renderExpirySelect(el, item, selected){
+  var exs = expiriesOf(item);
+  el.innerHTML = '';
+  for (var i=0;i<exs.length;i++){
+    var ex = exs[i];
+    var q = qtyOf(item, ex);
+    var label = ex + (q===null ? '' : '（在庫:' + q + '）');
+    var op = document.createElement('option');
+    op.value = ex;
+    op.textContent = label;
+    el.appendChild(op);
+  }
+  if (selected && exs.indexOf(selected) >= 0) el.value = selected;
+  else if (exs.length) el.value = exs[0];
+}
+
+/* ===== API 読み込み ===== */
+async function loadAll(){
+  showMsg(null, null);
+
+  var o = await fetch('/api/options/').then(function(r){ return r.json(); });
+  OPTS = o;
+
+  // 初期値：名前
+  setSelectOptions(elName, o.names || [], (o.names && o.names[0]) ? o.names[0] : '');
+
+  // 初期値：おかず / ご飯
+  setSelectOptions(elOkazu, o.okazu_items || [], (o.okazu_items && o.okazu_items[0]) ? o.okazu_items[0] : '');
+  setSelectOptions(elGohan, o.gohan_items || [], (o.gohan_items && o.gohan_items[0]) ? o.gohan_items[0] : '');
+
+  renderExpirySelect(elOkazuExpiry, elOkazu.value, '');
+  renderExpirySelect(elGohanExpiry, elGohan.value, '');
+
+  elOkazu.addEventListener('change', function(){ renderExpirySelect(elOkazuExpiry, elOkazu.value, ''); });
+  elGohan.addEventListener('change', function(){ renderExpirySelect(elGohanExpiry, elGohan.value, ''); });
+
+  var p = await fetch('/api/pending/').then(function(r){ return r.json(); });
+  renderPending(p.orders || []);
+}
+
+/* ===== 未確定一覧 ===== */
+function renderPending(rows){
+  elPendingBody.innerHTML = '';
+  for (var i=0;i<rows.length;i++){
+    var o = rows[i];
+    var tr = document.createElement('tr');
+
+    tr.innerHTML = ''
+      + '<td>' + escapeHtml(fmtIso(o.created_at)) + '</td>'
+      + '<td>' + escapeHtml(o.name) + '</td>'
+      + '<td>' + escapeHtml(o.okazu) + '</td>'
+      + '<td>' + escapeHtml(o.okazu_expiry) + '</td>'
+      + '<td>' + escapeHtml(o.gohan) + '</td>'
+      + '<td>' + escapeHtml(o.gohan_expiry) + '</td>'
+      + '<td>' + (o.cancelled ? '取消' : '未確定') + '</td>'
+      + '<td></td>';
+
+    var tdOp = tr.querySelector('td:last-child');
+
+    // 取消は「未確定 & 未取消」のみ。確定後は一覧から消えるので操作不能。
+    if (!o.cancelled) {
+      var btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline-danger';
+      btn.textContent = '取消';
+      btn.addEventListener('click', (function(id){ return function(){ cancelOne(id); }; })(o.id));
+      tdOp.appendChild(btn);
+    }
+
+    elPendingBody.appendChild(tr);
+  }
+}
+
+/* ===== 仮送信 ===== */
+async function submit(){
+  showMsg(null, null);
+
+  var payload = {
+    name: elName.value,
+    okazu: elOkazu.value,
+    okazu_expiry: elOkazuExpiry.value,
+    gohan: elGohan.value,
+    gohan_expiry: elGohanExpiry.value
+  };
+
+  var res = await fetch('/api/order/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': csrf()
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    var t = await res.text();
+    showMsg('error', t || '送信エラー');
+    return;
+  }
+
+  showMsg('success', '仮送信しました（未確定に追加 / 在庫はまだ減りません）');
+  await loadAll();
+}
+
+/* ===== 取消 ===== */
+async function cancelOne(id){
+  showMsg(null, null);
+
+  var res = await fetch('/api/cancel/' + id + '/', {
+    method: 'POST',
+    headers: { 'X-CSRFToken': csrf() }
+  });
+
+  if (!res.ok) {
+    var t = await res.text();
+    showMsg('error', t || '取消エラー');
+    return;
+  }
+
+  showMsg('success', '取消しました（在庫は減りません）');
+  await loadAll();
+}
+
+/* ===== 一括確定（在庫-1） ===== */
+async function confirmAll(){
+  showMsg(null, null);
+
+  var res = await fetch('/api/confirm/', {
+    method: 'POST',
+    headers: { 'X-CSRFToken': csrf() }
+  });
+
+  var data = await res.json();
+
+  if (!data.ok) {
+    showMsg('error', (data.errors || []).join('\n') || '確定エラー');
+    await loadAll();
+    return;
+  }
+
+  showMsg('success', '一括確定しました（おかず・ご飯をそれぞれ在庫-1）\n確定済みは取消できません。');
+  await loadAll();
+}
+
+/* ===== ボタン紐づけ ===== */
+document.getElementById('btn-submit').addEventListener('click', submit);
+document.getElementById('btn-confirm').addEventListener('click', confirmAll);
+
+/* ===== 初回 ===== */
+loadAll();
+</script>
+</body>
+</html>
